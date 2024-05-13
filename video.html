@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video with Subtitles</title>
+</head>
+<body>
+    <h2>Video with Subtitles</h2>
+    
+    <video width="640" height="480" controls>
+        <source src="{{ video_path }}" type="video/mp4">
+        <!-- Include track element for subtitles -->
+        <track src="{{ subtitles_path }}" kind="subtitles" srclang="en" label="English">
+        Your browser does not support the video tag.
+    </video>
+    
+    <!-- Display subtitles below the video -->
+    <div>
+        <h3>Subtitles:</h3>
+        <p>{{ subtitles }}</p>
+    </div>
+</body>
+</html>
