@@ -1,9 +1,16 @@
 import os
-from flask import Flask, render_template, request, redirect, url_for, flash, Response
-from moviepy.editor import VideoFileClip
-import speech_recognition as sr
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
 from pymongo import MongoClient
 from bson.objectid import ObjectId
+from datetime import timedelta
+from moviepy.config import change_settings
+import tempfile
+import ffmpeg
+import whisper
+
+# Set the path to the ImageMagick binary (if required)
+change_settings({"IMAGEMAGICK_BINARY": "C:\\Program Files\\ImageMagick-7.1.1-Q16-HDRI\\magick.exe"})
 
 app = Flask(__name__)
 
@@ -19,42 +26,28 @@ users = {
 }
 
 def generate_subtitles(video_path):
-    # Load the video clip
-    video_clip = VideoFileClip(video_path)
-    
-    # Get the duration of the video in seconds
-    duration = video_clip.duration
-    
-    # Generate subtitles as a string
-    subtitles = ""
-    for i, frame in enumerate(video_clip.iter_frames()):
-        # For demonstration purposes, let's assume subtitles are generated based on frame number
-        # Replace this logic with your actual subtitle generation algorithm
-        subtitle_text = f"Subtitle {i+1} - Frame {i+1}"
-        subtitles += f"{subtitle_text}\n"
-    
-    # Close the video clip
-    video_clip.close()
-    
-    return subtitles
+    temp_dir = tempfile.gettempdir()
+    audio_path = os.path.join(temp_dir, 'audio.wav')
 
-# Function to extract text from video
-def extract_text_from_video(video_file):
-    # Load the video clip
-    video_clip = VideoFileClip(video_file)
-    
-    # Initialize speech recognizer
-    recognizer = sr.Recognizer()
-    
     # Extract audio from video
-    audio = video_clip.audio.to_soundarray()
-    
-    # Convert audio to text
-    with sr.AudioFile(audio) as source:
-        audio_data = recognizer.record(source)
-        text = recognizer.recognize_google(audio_data)
-    
-    return text
+    ffmpeg.input(video_path).output(audio_path, acodec='pcm_s16le', ac=1, ar='16k').run(quiet=True, overwrite_output=True)
+
+    # Load Whisper model
+    model_name = 'small'
+    model = whisper.load_model(model_name)
+
+    # Transcribe audio to generate subtitles
+    result = model.transcribe(audio_path)
+
+    # Prepare subtitles in SRT format
+    subtitles = ""
+    for i, segment in enumerate(result['segments'], start=1):
+        start_time = timedelta(seconds=segment['start'])
+        end_time = timedelta(seconds=segment['end'])
+        text = segment['text']
+        subtitles += f"{i}\n{start_time} --> {end_time}\n{text}\n\n"
+
+    return subtitles
 
 @app.route('/')
 def home():
@@ -75,7 +68,7 @@ def login():
 
 @app.route('/dashboard')
 def dashboard():
-    # Add logic for the dashboard here
+    # Fetch subtitles from MongoDB
     subtitles = subtitles_collection.find()
     return render_template('dashboard.html', subtitles=subtitles)
 
@@ -89,62 +82,58 @@ def process_subtitle():
     
     # Save the video file
     video_path = os.path.join('uploads', video_file.filename)
+    os.makedirs(os.path.dirname(video_path), exist_ok=True)
     video_file.save(video_path)
     
     # Generate subtitles
     generated_subtitles = generate_subtitles(video_path)
     
-    # Save the subtitles to MongoDB
-    subtitles_id = subtitles_collection.insert_one({'filename': video_file.filename, 'subtitles': generated_subtitles}).inserted_id
+    # Save the subtitles to a temporary SRT file
+    srt_path = os.path.join(tempfile.gettempdir(), video_file.filename.split('.')[0] + '.srt')
+    with open(srt_path, 'w') as f:
+        f.write(generated_subtitles)
     
-    return 'Subtitles generated and saved successfully'
-
-# Route to handle video upload and display subtitles
-@app.route('/upload', methods=['GET', 'POST'])
-def upload_video():
-    if request.method == 'POST':
-        # Check if the post request has the file part
-        if 'file' not in request.files:
-            flash('No file part')
-            return redirect(request.url)
-        
-        file = request.files['file']
-        
-        # If user does not select file, browser also
-        # submit an empty part without filename
-        if file.filename == '':
-            flash('No selected file')
-            return redirect(request.url)
-        
-        if file:
-            # Save the video file
-            video_path = 'uploads/' + file.filename
-            file.save(video_path)
-            
-            # Extract text from the video
-            subtitles = extract_text_from_video(video_path)
-            
-            # Pass the subtitles to the template for display
-            return render_template('video.html', video_path=video_path, subtitles=subtitles)
+    # Embed subtitles into the video
+    output_video_path = os.path.join(tempfile.gettempdir(), 'output_' + video_file.filename)
+    video_clip = VideoFileClip(video_path)
     
-    return render_template('upload.html')
+    subtitle_clips = []
+    for line in generated_subtitles.split("\n\n"):
+        if line.strip():
+            parts = line.split("\n")
+            index = parts[0]
+            time_range = parts[1].split(" --> ")
+            start_time = sum(x * float(t) for x, t in zip([3600, 60, 1], time_range[0].split(":")))
+            end_time = sum(x * float(t) for x, t in zip([3600, 60, 1], time_range[1].split(":")))
+            text = " ".join(parts[2:])
+            subtitle_clip = TextClip(text, font='Arial', fontsize=24, color='white', bg_color='black')
+            subtitle_clip = subtitle_clip.set_position(('center', 'bottom')).set_start(start_time).set_end(end_time)
+            subtitle_clips.append(subtitle_clip)
+    
+    final_video = CompositeVideoClip([video_clip] + subtitle_clips)
+    final_video.write_videofile(output_video_path, codec='libx264', audio_codec='aac')
+    
+    # Save the subtitles and video path to MongoDB
+    subtitles_id = subtitles_collection.insert_one({
+        'filename': video_file.filename,
+        'subtitles': generated_subtitles,
+        'output_video_path': output_video_path
+    }).inserted_id
+    
+    # Redirect to dashboard or display success message
+    return redirect(url_for('dashboard'))
 
-@app.route('/download_subtitle/<subtitle_id>')
-def download_subtitle(subtitle_id):
-    # Retrieve subtitles from MongoDB
+@app.route('/download_video/<subtitle_id>')
+def download_video(subtitle_id):
     subtitle = subtitles_collection.find_one({'_id': ObjectId(subtitle_id)})
     if subtitle:
-        # Send the subtitles data to the client for download
-        subtitles = subtitle['subtitles']
-        filename = subtitle['filename']
-        headers = {
-            'Content-Disposition': f'attachment;filename={filename.encode("utf-8")}',
-            'Content-Type': 'text/plain; charset=utf-8'
-        }
-        return Response(subtitles, mimetype='text/plain', headers=headers)
+        output_video_path = subtitle['output_video_path']
+        if os.path.exists(output_video_path):
+            return send_file(output_video_path, as_attachment=True, download_name='video_with_subtitles.mp4')
+        else:
+            return 'Processed video not found'
     else:
         return 'Subtitles not found'
 
 if __name__ == '__main__':
     app.run(debug=True)
-
