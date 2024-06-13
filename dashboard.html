@@ -31,7 +31,7 @@
             {% for subtitle in subtitles %}
             <li>
                 <span>{{ subtitle.filename }}</span>
-                <a href="{{ url_for('download_subtitle', subtitle_id=subtitle._id) }}" class="download-link">Download</a>
+                <a href="{{ url_for('download_video', subtitle_id=subtitle._id) }}" class="download-link">Download</a>
             </li>
             {% endfor %}
         </ul>
