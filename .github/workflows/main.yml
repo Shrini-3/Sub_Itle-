@@ -26,6 +26,10 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Verify pytest installation
+      run: |
+        pytest --version
+
     - name: Run tests
       run: |
         pytest
@@ -33,6 +37,11 @@ jobs:
     - name: Run linting
       run: |
         flake8 .
+
+    - name: Start Flask application
+      run: |
+        python app.py  # Update this line as needed to start your Flask application
+
 
     - name: Start Flask application
       run: |
