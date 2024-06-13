@@ -1,1 +1,6 @@
+flask
+pymongo
+moviepy
+whisper
+ffmpeg-python
 
